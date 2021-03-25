@@ -16,10 +16,15 @@ body of text.
 #include <sys/time.h>
 
 #define MAX 5000000
-#define NUM_THREADS 4
 
-int n1,n2, chunk_size, total_finds = 0;
+int n1,n2, total_finds = 0;
 char *s1,*s2;
+
+// struct to pass data to threaded function
+typedef struct {
+    int t_num;
+    int num_threads;
+} thread_info;
 
 pthread_mutex_t mutex;
 
@@ -49,23 +54,25 @@ int readf(char* filename) {
     s2=fgets(s2, MAX, fp);
     n1=strlen(s1);   // length of text
     n2=strlen(s2)-1; // length of target
-    printf("text length: %d; target length: %d\n", n1, n2);
-
-    // length of text that a given thread will search
-    chunk_size = n1 / NUM_THREADS;
     
     if( s1==NULL || s2==NULL || n1 < n2 ) return -1; // exit if error occurs
 }
 
-void *num_substring(void *t_num) {
+void *num_substring(void *_info) {
 
     int j,k, count, i_found = 0;
-    int chunk_start = (long)t_num * chunk_size;
+    thread_info *info = _info;
+
+    // using info->t_num was giving a junk value, but this fixes it somehow
+    int t_num = info->t_num;
+
+    int chunk_size = n1 / info->num_threads;
+    int chunk_start = t_num * chunk_size;
     int chunk_stop  = chunk_start + chunk_size;
 
     // all threads except the last should search beyond the chunk boundary
     // to find matches that cross over
-    if ((long)t_num != NUM_THREADS - 1) chunk_stop += n2;
+    if (t_num != info->num_threads - 1) chunk_stop += n2;
    
     for (int i = chunk_start; i <= chunk_stop; i++) {
         // number of matching characters "so far"
@@ -86,29 +93,43 @@ void *num_substring(void *t_num) {
     total_finds += i_found;
     pthread_mutex_unlock(&mutex);
 
-    printf("thread %ld found %d\n", (long)t_num, i_found);
+    // info is recreated in main() for other threads
+    free(info);
+
+    printf(" -thread %d found %d\n", t_num+1, i_found);
 }
     
 int main(int argc, char *argv[]) {
-    if(argc < 2)
-      printf("Error: You must pass in the datafile as a commandline parameter\n");
+    if(argc < 3) {
+        printf("usage: ./thread [filename] [number of threads]\n\n");
+        return -1;
+    }
 
     readf(argv[1]);
-
+    
     struct timeval start, end;
     float mtime; 
     int status, secs, usecs;    
 
+    int nt = atoi(argv[2]);
+
+    printf("file: %s (%d characters)\nsearching for: %s", argv[1], n1, s2);
+    printf("number of threads: %d\n", nt);
+
     gettimeofday(&start, NULL);
 
-    pthread_t threads[NUM_THREADS];
+    pthread_t threads[nt];
     pthread_mutex_init(&mutex, NULL);
 
     // loop to create threads
-    for (int t_num = 0; t_num < NUM_THREADS; t_num++) {
+    for (int t_num = 0; t_num < nt; t_num++) {
+
+        thread_info *info = malloc(sizeof(thread_info));
+        info->num_threads = nt;
+        info->t_num = t_num;
 
         // create thread, passing the thread number to tell it where to start searching
-        status = pthread_create(&threads[t_num], NULL, num_substring, (void *)(long)t_num);
+        status = pthread_create(&threads[t_num], NULL, num_substring, (void *) info);
 
         if (status) {
             printf("error creating thread %d: %d\n", t_num, status);
@@ -117,7 +138,7 @@ int main(int argc, char *argv[]) {
     }
 
     // loop to join threads
-    for (int t_num = 0; t_num < NUM_THREADS; t_num++) {
+    for (int t_num = 0; t_num < nt; t_num++) {
         if (pthread_join(threads[t_num], NULL)) {
             printf("error joining thread %d\n", t_num);
             return -1;
@@ -130,8 +151,8 @@ int main(int argc, char *argv[]) {
     usecs = end.tv_usec - start.tv_usec;
     mtime = ((secs) * 1000 + usecs/1000.0) + 0.5;
 
-    printf("The number of substrings is : %d\n" , total_finds);
-    printf("Elapsed time is : %f milliseconds\n", mtime);
+    printf("total matches: %d\n" , total_finds);
+    printf("elapsed time: %f ms\n", mtime);
 
     if (s1) free(s1);
     if (s2) free(s2);
